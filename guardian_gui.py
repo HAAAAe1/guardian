@@ -34,7 +34,8 @@ DEFAULT_CONFIG = {
     "threshold": 2,
     "interval": 0.5,
     "confidence": 0.5,
-    "restore_delay": 3,  # 低于阈值后等待几秒才恢复
+    "restore_delay": 3,
+    "exclusion_zone": [],  # [x1, y1, x2, y2] 不检测区域（320x240坐标）
     "target_windows": [],
     "camera_index": 0,
     "enabled": True,
@@ -144,13 +145,34 @@ class Detector:
             small = cv2.resize(frame, (320, 240))
             results = self.model(small, conf=self.cfg["confidence"], classes=[0], verbose=False)
 
-            count = 0
+            # 收集所有人框
+            all_boxes = []
             for r in results:
                 if r.boxes is not None:
-                    count = len(r.boxes)
                     for box in r.boxes:
-                        x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                        cv2.rectangle(small, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        all_boxes.append(list(map(int, box.xyxy[0].tolist())))
+
+            # 过滤排除区域
+            zone = self.cfg.get("exclusion_zone", [])
+            if zone and len(zone) == 4:
+                zx1, zy1, zx2, zy2 = zone
+                filtered = []
+                for x1, y1, x2, y2 in all_boxes:
+                    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                    if not (zx1 <= cx <= zx2 and zy1 <= cy <= zy2):
+                        filtered.append([x1, y1, x2, y2])
+                all_boxes = filtered
+
+            count = len(all_boxes)
+            for x1, y1, x2, y2 in all_boxes:
+                cv2.rectangle(small, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+            # 画排除区域（红色虚线框）
+            if zone and len(zone) == 4:
+                zx1, zy1, zx2, zy2 = zone
+                cv2.rectangle(small, (zx1, zy1), (zx2, zy2), (0, 0, 255), 2)
+                cv2.putText(small, "EXCLUDE", (zx1, zy1 - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
 
             rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
             with self.frame_lock:
@@ -256,6 +278,21 @@ class App:
         self.cam_canvas.pack()
         self.cam_canvas.create_text(200, 140, text="等待摄像头...", fill="#555",
                                      font=("微软雅黑", 12), tags="placeholder")
+
+        # 鼠标拖拽画排除区域
+        self._drag_start = None
+        self._drag_rect = None
+        self.cam_canvas.bind("<ButtonPress-1>", self._on_drag_start)
+        self.cam_canvas.bind("<B1-Motion>", self._on_drag_move)
+        self.cam_canvas.bind("<ButtonRelease-1>", self._on_drag_end)
+
+        # 排除区域提示
+        hint = tk.Frame(cam_frame, bg=BG)
+        hint.pack(fill=tk.X, pady=(2, 0))
+        tk.Label(hint, text="💡 在画面上拖拽可画出不检测区域", fg="#888", bg=BG,
+                 font=("微软雅黑", 8)).pack(side=tk.LEFT)
+        tk.Button(hint, text="清除区域", font=("微软雅黑", 8), bg="#444", fg="white",
+                  relief="flat", cursor="hand2", command=self._clear_zone).pack(side=tk.RIGHT)
 
         # ── 按钮 ──
         btn_bar = tk.Frame(self.root, bg=BG)
@@ -371,6 +408,57 @@ class App:
         self.detector.toggle()
         self.btn_toggle.config(text="▶️ 启动" if not self.detector.enabled else "⏸ 暂停")
 
+    # ── 排除区域拖拽 ──
+    def _on_drag_start(self, event):
+        self._drag_start = (event.x, event.y)
+        if self._drag_rect:
+            self.cam_canvas.delete(self._drag_rect)
+        self._drag_rect = self.cam_canvas.create_rectangle(
+            event.x, event.y, event.x, event.y,
+            outline="red", width=2, dash=(4, 4), tags="exclusion"
+        )
+
+    def _on_drag_move(self, event):
+        if self._drag_start and self._drag_rect:
+            x0, y0 = self._drag_start
+            self.cam_canvas.coords(self._drag_rect, x0, y0, event.x, event.y)
+
+    def _on_drag_end(self, event):
+        if not self._drag_start:
+            return
+        x0, y0 = self._drag_start
+        x1, y1 = event.x, event.y
+        self._drag_start = None
+
+        # 转换到320x240坐标
+        zx0 = int(x0 * 320 / 400)
+        zy0 = int(y0 * 280 / 280)
+        zx1 = int(x1 * 320 / 400)
+        zy1 = int(y1 * 280 / 280)
+
+        # 确保左上右下
+        zone = [min(zx0, zx1), min(zy0, zy1), max(zx0, zx1), max(zy0, zy1)]
+
+        # 太小的忽略
+        if zone[2] - zone[0] < 10 or zone[3] - zone[1] < 10:
+            if self._drag_rect:
+                self.cam_canvas.delete(self._drag_rect)
+                self._drag_rect = None
+            return
+
+        self.cfg["exclusion_zone"] = zone
+        save_config(self.cfg)
+        self.detector.cfg = self.cfg
+        self.lbl_status.config(text=f"✅ 排除区域已设置")
+
+    def _clear_zone(self):
+        self.cfg["exclusion_zone"] = []
+        save_config(self.cfg)
+        self.detector.cfg = self.cfg
+        self.cam_canvas.delete("exclusion")
+        self._drag_rect = None
+        self.lbl_status.config(text="✅ 排除区域已清除")
+
     def _poll(self):
         """每 200ms 刷新界面"""
         st = self.detector.status
@@ -395,7 +483,9 @@ class App:
             img = Image.fromarray(frame)
             img = img.resize((400, 280), Image.LANCZOS)
             self._photo = ImageTk.PhotoImage(img)
-            self.cam_canvas.create_image(0, 0, anchor=tk.NW, image=self._photo)
+            self.cam_canvas.create_image(0, 0, anchor=tk.NW, image=self._photo, tags="cam")
+            # 保持排除区域框在最上层
+            self.cam_canvas.tag_raise("exclusion")
 
         self.root.after(200, self._poll)
 
