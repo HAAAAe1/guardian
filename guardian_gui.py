@@ -35,7 +35,7 @@ DEFAULT_CONFIG = {
     "interval": 0.5,
     "confidence": 0.5,
     "restore_delay": 3,
-    "exclusion_zone": [],  # [x1, y1, x2, y2] 不检测区域（320x240坐标）
+    "exclusion_zone": [],  # [[x1,y1,x2,y2], ...] 多个不检测区域
     "target_windows": [],
     "camera_index": 0,
     "enabled": True,
@@ -152,14 +152,20 @@ class Detector:
                     for box in r.boxes:
                         all_boxes.append(list(map(int, box.xyxy[0].tolist())))
 
-            # 过滤排除区域
-            zone = self.cfg.get("exclusion_zone", [])
-            if zone and len(zone) == 4:
-                zx1, zy1, zx2, zy2 = zone
+            # 过滤排除区域（支持多个区域）
+            zones = self.cfg.get("exclusion_zone", [])
+            if zones:
                 filtered = []
                 for x1, y1, x2, y2 in all_boxes:
                     cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-                    if not (zx1 <= cx <= zx2 and zy1 <= cy <= zy2):
+                    in_zone = False
+                    for zone in zones:
+                        if len(zone) == 4:
+                            zx1, zy1, zx2, zy2 = zone
+                            if zx1 <= cx <= zx2 and zy1 <= cy <= zy2:
+                                in_zone = True
+                                break
+                    if not in_zone:
                         filtered.append([x1, y1, x2, y2])
                 all_boxes = filtered
 
@@ -167,12 +173,14 @@ class Detector:
             for x1, y1, x2, y2 in all_boxes:
                 cv2.rectangle(small, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-            # 画排除区域（红色虚线框）
-            if zone and len(zone) == 4:
-                zx1, zy1, zx2, zy2 = zone
-                cv2.rectangle(small, (zx1, zy1), (zx2, zy2), (0, 0, 255), 2)
-                cv2.putText(small, "EXCLUDE", (zx1, zy1 - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+            # 画所有排除区域（红色虚线框）
+            if zones:
+                for zone in zones:
+                    if len(zone) == 4:
+                        zx1, zy1, zx2, zy2 = zone
+                        cv2.rectangle(small, (zx1, zy1), (zx2, zy2), (0, 0, 255), 2)
+                        cv2.putText(small, "EX", (zx1, zy1 - 5),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
 
             rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
             with self.frame_lock:
@@ -408,7 +416,7 @@ class App:
         self.detector.toggle()
         self.btn_toggle.config(text="▶️ 启动" if not self.detector.enabled else "⏸ 暂停")
 
-    # ── 排除区域拖拽 ──
+    # ── 排除区域拖拽（支持多个）──
     def _on_drag_start(self, event):
         self._drag_start = (event.x, event.y)
         if self._drag_rect:
@@ -436,7 +444,6 @@ class App:
         zx1 = int(x1 * 320 / 400)
         zy1 = int(y1 * 280 / 280)
 
-        # 确保左上右下
         zone = [min(zx0, zx1), min(zy0, zy1), max(zx0, zx1), max(zy0, zy1)]
 
         # 太小的忽略
@@ -446,10 +453,13 @@ class App:
                 self._drag_rect = None
             return
 
-        self.cfg["exclusion_zone"] = zone
+        # 追加到区域列表
+        zones = self.cfg.get("exclusion_zone", [])
+        zones.append(zone)
+        self.cfg["exclusion_zone"] = zones
         save_config(self.cfg)
         self.detector.cfg = self.cfg
-        self.lbl_status.config(text=f"✅ 排除区域已设置")
+        self.lbl_status.config(text=f"✅ 已添加排除区域 ({len(zones)}个)")
 
     def _clear_zone(self):
         self.cfg["exclusion_zone"] = []
@@ -457,7 +467,7 @@ class App:
         self.detector.cfg = self.cfg
         self.cam_canvas.delete("exclusion")
         self._drag_rect = None
-        self.lbl_status.config(text="✅ 排除区域已清除")
+        self.lbl_status.config(text="✅ 排除区域已全部清除")
 
     def _poll(self):
         """每 200ms 刷新界面"""
