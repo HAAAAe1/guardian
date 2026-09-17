@@ -194,7 +194,7 @@ class Detector:
             if self.cfg.get("face_filter", True):
                 h, w = small.shape[:2]
                 # 预处理: resize + normalize + transpose to NCHW
-                inp = cv2.resize(small, (320, 320))
+                inp = cv2.resize(small, (640, 640))
                 inp = inp.astype(np.float32) / 255.0
                 inp = inp.transpose(2, 0, 1)  # HWC -> CHW
                 inp = np.expand_dims(inp, 0)   # add batch dim
@@ -209,10 +209,10 @@ class Detector:
                     if conf < FACE_CONF_THRESHOLD:
                         continue
                     cx, cy, bw, bh = det[0], det[1], det[2], det[3]
-                    fx1 = int((cx - bw / 2) * w / 320)
-                    fy1 = int((cy - bh / 2) * h / 320)
-                    fx2 = int((cx + bw / 2) * w / 320)
-                    fy2 = int((cy + bh / 2) * h / 320)
+                    fx1 = int((cx - bw / 2) * w / 640)
+                    fy1 = int((cy - bh / 2) * h / 640)
+                    fx2 = int((cx + bw / 2) * w / 640)
+                    fy2 = int((cy + bh / 2) * h / 640)
                     face_boxes.append((max(0, fx1), max(0, fy1), min(w, fx2), min(h, fy2)))
                 # 只保留有人脸的 person
                 with_faces = []
