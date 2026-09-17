@@ -34,6 +34,7 @@ DEFAULT_CONFIG = {
     "threshold": 2,
     "interval": 0.5,
     "confidence": 0.5,
+    "restore_delay": 3,  # 低于阈值后等待几秒才恢复
     "target_windows": [],
     "camera_index": 0,
     "enabled": True,
@@ -111,6 +112,7 @@ class Detector:
         self.lock = threading.Lock()
         self.current_frame = None
         self.frame_lock = threading.Lock()
+        self._below_since = 0  # 低于阈值的起始时间
 
     def run(self):
         # 模型
@@ -157,23 +159,36 @@ class Detector:
 
             # 隐藏/恢复逻辑
             threshold = self.cfg["threshold"]
+            restore_delay = self.cfg.get("restore_delay", 3)  # 恢复延迟秒数
+
             if count >= threshold and not self.is_hidden:
+                self._below_since = 0
                 hwnds = find_target_windows(self.cfg)
                 if hwnds:
                     hide_windows(hwnds)
                     self.hidden_hwnds = hwnds
                     self.is_hidden = True
-                    self.status = f"🔴 已隐藏 {len(hwnds)} 个窗口"
+                    self.status = f"🔴 已最小化 {len(hwnds)} 个窗口"
                 else:
                     self.status = f"⚠️ 检测到 {count} 人但无匹配窗口"
 
             elif count < threshold and self.is_hidden:
-                show_windows(self.hidden_hwnds)
-                self.hidden_hwnds = []
-                self.is_hidden = False
-                self.status = f"🟢 恢复显示 ({count}人)"
+                now = time.time()
+                if self._below_since == 0:
+                    self._below_since = now
+                    self.status = f"🟢 人数减少，{restore_delay}s 后恢复..."
+                elif now - self._below_since >= restore_delay:
+                    show_windows(self.hidden_hwnds)
+                    self.hidden_hwnds = []
+                    self.is_hidden = False
+                    self._below_since = 0
+                    self.status = f"🟢 已恢复 ({count}人)"
+                else:
+                    remaining = int(restore_delay - (now - self._below_since))
+                    self.status = f"🟢 人数减少，{remaining}s 后恢复..."
 
             elif not self.is_hidden:
+                self._below_since = 0
                 self.status = f"🟢 监控中 ({count}人)"
 
             time.sleep(self.cfg["interval"])
@@ -296,6 +311,18 @@ class App:
         tk.Label(bot, text="人", fg="#ccc", bg="#2a2a2a",
                  font=("微软雅黑", 9)).pack(side=tk.LEFT)
 
+        tk.Label(bot, text="  恢复延迟:", fg="#ccc", bg="#2a2a2a",
+                 font=("微软雅黑", 9)).pack(side=tk.LEFT)
+
+        self.delay_var = tk.IntVar(value=self.cfg.get("restore_delay", 3))
+        delay_spn = tk.Spinbox(bot, from_=1, to=10, width=3, textvariable=self.delay_var,
+                                font=("微软雅黑", 10), bg="#333", fg="white",
+                                buttonbackground="#444", relief="flat",
+                                command=self._on_delay_change)
+        delay_spn.pack(side=tk.LEFT, padx=4)
+        tk.Label(bot, text="秒", fg="#ccc", bg="#2a2a2a",
+                 font=("微软雅黑", 9)).pack(side=tk.LEFT)
+
         tk.Button(bot, text="💾 保存选择", font=("微软雅黑", 9, "bold"),
                   bg="#1565c0", fg="white", relief="flat", cursor="hand2",
                   command=self._save).pack(side=tk.RIGHT)
@@ -331,6 +358,12 @@ class App:
     def _on_threshold(self):
         v = self.spn_var.get()
         self.cfg["threshold"] = v
+        save_config(self.cfg)
+        self.detector.cfg = self.cfg
+
+    def _on_delay_change(self):
+        v = self.delay_var.get()
+        self.cfg["restore_delay"] = v
         save_config(self.cfg)
         self.detector.cfg = self.cfg
 
