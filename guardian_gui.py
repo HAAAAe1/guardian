@@ -17,6 +17,10 @@ import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk, ImageDraw
 
+# 肤色 HSV 范围（用于判断是否有脸）
+SKIN_LOWER = np.array([0, 30, 60], dtype=np.uint8)
+SKIN_UPPER = np.array([25, 170, 255], dtype=np.uint8)
+
 # ── Win32 ──────────────────────────────────────────────────
 user32 = ctypes.windll.user32
 SW_HIDE = 0
@@ -35,7 +39,8 @@ DEFAULT_CONFIG = {
     "interval": 0.5,
     "confidence": 0.5,
     "restore_delay": 3,
-    "exclusion_zone": [],  # [x1, y1, x2, y2] 不检测区域（320x240坐标）
+    "exclusion_zone": [],
+    "face_filter": True,  # 只计有脸的人（过滤后脑勺）
     "target_windows": [],
     "camera_index": 0,
     "enabled": True,
@@ -162,6 +167,27 @@ class Detector:
                     if not (zx1 <= cx <= zx2 and zy1 <= cy <= zy2):
                         filtered.append([x1, y1, x2, y2])
                 all_boxes = filtered
+
+            # 过滤后脑勺：裁出上半身检测有没有脸（肤色检测）
+            if self.cfg.get("face_filter", True):
+                with_faces = []
+                h, w = small.shape[:2]
+                for x1, y1, x2, y2 in all_boxes:
+                    # 裁出头部区域（上半部分）
+                    crop_y1 = max(0, y1)
+                    crop_y2 = min(h, y1 + (y2 - y1) // 2)
+                    crop_x1 = max(0, x1)
+                    crop_x2 = min(w, x2)
+                    if crop_y2 <= crop_y1 or crop_x2 <= crop_x1:
+                        continue
+                    crop = small[crop_y1:crop_y2, crop_x1:crop_x2]
+                    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+                    skin_mask = cv2.inRange(hsv, SKIN_LOWER, SKIN_UPPER)
+                    skin_ratio = np.count_nonzero(skin_mask) / skin_mask.size
+                    # 肤色占比 > 8% 认为有脸
+                    if skin_ratio > 0.08:
+                        with_faces.append([x1, y1, x2, y2])
+                all_boxes = with_faces
 
             count = len(all_boxes)
             for x1, y1, x2, y2 in all_boxes:
@@ -360,6 +386,13 @@ class App:
         tk.Label(bot, text="秒", fg="#ccc", bg="#2a2a2a",
                  font=("微软雅黑", 9)).pack(side=tk.LEFT)
 
+        self.face_var = tk.BooleanVar(value=self.cfg.get("face_filter", True))
+        face_cb = tk.Checkbutton(bot, text="过滤后脑勺", variable=self.face_var,
+                                  fg="#ccc", bg="#2a2a2a", selectcolor="#333",
+                                  activebackground="#2a2a2a", activeforeground="#ccc",
+                                  font=("微软雅黑", 9), command=self._on_face_toggle)
+        face_cb.pack(side=tk.LEFT, padx=(10, 0))
+
         tk.Button(bot, text="💾 保存选择", font=("微软雅黑", 9, "bold"),
                   bg="#1565c0", fg="white", relief="flat", cursor="hand2",
                   command=self._save).pack(side=tk.RIGHT)
@@ -401,6 +434,12 @@ class App:
     def _on_delay_change(self):
         v = self.delay_var.get()
         self.cfg["restore_delay"] = v
+        save_config(self.cfg)
+        self.detector.cfg = self.cfg
+
+    def _on_face_toggle(self):
+        v = self.face_var.get()
+        self.cfg["face_filter"] = v
         save_config(self.cfg)
         self.detector.cfg = self.cfg
 
