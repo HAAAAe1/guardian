@@ -17,9 +17,10 @@ import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk, ImageDraw
 
-# YOLOv8-face 人脸检测器（ONNX）
+# YOLOv8-face 人脸检测器（ONNX + onnxruntime）
+import onnxruntime as ort
 FACE_MODEL = str(Path.home() / "Downloads" / "yolov8n-face-lindevs.onnx")
-face_net = cv2.dnn.readNetFromONNX(FACE_MODEL)
+face_session = ort.InferenceSession(FACE_MODEL, providers=["CPUExecutionProvider"])
 FACE_CONF_THRESHOLD = 0.4
 
 # ── Win32 ──────────────────────────────────────────────────
@@ -192,20 +193,21 @@ class Detector:
             # 过滤后脑勺：YOLOv8-face 检测有没有脸
             if self.cfg.get("face_filter", True):
                 h, w = small.shape[:2]
-                # 整帧跑一次 face 检测
-                blob = cv2.dnn.blobFromImage(small, 1 / 255.0, (320, 320), swapRB=True, crop=False)
-                face_net.setInput(blob)
-                face_output = face_net.forward(face_net.getUnconnectedOutLayersNames())
-                # YOLOv8 输出: [1, num, 5+num_classes] 或 [1, 5+num_classes, num]
-                preds = face_output[0]
-                if preds.ndim == 3:
-                    preds = preds[0]
+                # 预处理: resize + normalize + transpose to NCHW
+                inp = cv2.resize(small, (320, 320))
+                inp = inp.astype(np.float32) / 255.0
+                inp = inp.transpose(2, 0, 1)  # HWC -> CHW
+                inp = np.expand_dims(inp, 0)   # add batch dim
+                # 推理
+                input_name = face_session.get_inputs()[0].name
+                face_output = face_session.run(None, {input_name: inp})[0]
+                # 解析输出: [1, 5+num_classes, num_dets] -> 转置为 [num_dets, 5+num_classes]
+                preds = face_output[0].T  # (num_dets, 5+num_classes)
                 face_boxes = []
                 for det in preds:
-                    conf = det[4] if len(det) == 6 else det[4]
+                    conf = det[4]
                     if conf < FACE_CONF_THRESHOLD:
                         continue
-                    # cx, cy, w, h -> x1, y1, x2, y2
                     cx, cy, bw, bh = det[0], det[1], det[2], det[3]
                     fx1 = int((cx - bw / 2) * w / 320)
                     fy1 = int((cy - bh / 2) * h / 320)
