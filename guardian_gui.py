@@ -17,6 +17,11 @@ import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk, ImageDraw
 
+# YOLOv8-face 人脸检测器（ONNX）
+FACE_MODEL = str(Path.home() / "Downloads" / "yolov8n-face-lindevs.onnx")
+face_net = cv2.dnn.readNetFromONNX(FACE_MODEL)
+FACE_CONF_THRESHOLD = 0.4
+
 # ── Win32 ──────────────────────────────────────────────────
 user32 = ctypes.windll.user32
 SW_HIDE = 0
@@ -35,7 +40,8 @@ DEFAULT_CONFIG = {
     "interval": 0.5,
     "confidence": 0.5,
     "restore_delay": 3,
-    "exclusion_zone": [],  # [[x1,y1,x2,y2], ...] 多个不检测区域
+    "exclusion_zone": [],
+    "face_filter": True,
     "target_windows": [],
     "camera_index": 0,
     "enabled": True,
@@ -182,6 +188,42 @@ class Detector:
                     if not in_zone:
                         filtered.append([x1, y1, x2, y2])
                 all_boxes = filtered
+
+            # 过滤后脑勺：YOLOv8-face 检测有没有脸
+            if self.cfg.get("face_filter", True):
+                h, w = small.shape[:2]
+                # 整帧跑一次 face 检测
+                blob = cv2.dnn.blobFromImage(small, 1 / 255.0, (320, 320), swapRB=True, crop=False)
+                face_net.setInput(blob)
+                face_output = face_net.forward(face_net.getUnconnectedOutLayersNames())
+                # YOLOv8 输出: [1, num, 5+num_classes] 或 [1, 5+num_classes, num]
+                preds = face_output[0]
+                if preds.ndim == 3:
+                    preds = preds[0]
+                face_boxes = []
+                for det in preds:
+                    conf = det[4] if len(det) == 6 else det[4]
+                    if conf < FACE_CONF_THRESHOLD:
+                        continue
+                    # cx, cy, w, h -> x1, y1, x2, y2
+                    cx, cy, bw, bh = det[0], det[1], det[2], det[3]
+                    fx1 = int((cx - bw / 2) * w / 320)
+                    fy1 = int((cy - bh / 2) * h / 320)
+                    fx2 = int((cx + bw / 2) * w / 320)
+                    fy2 = int((cy + bh / 2) * h / 320)
+                    face_boxes.append((max(0, fx1), max(0, fy1), min(w, fx2), min(h, fy2)))
+                # 只保留有人脸的 person
+                with_faces = []
+                for x1, y1, x2, y2 in all_boxes:
+                    has_face = False
+                    for fx1, fy1, fx2, fy2 in face_boxes:
+                        fcx, fcy = (fx1 + fx2) // 2, (fy1 + fy2) // 2
+                        if x1 <= fcx <= x2 and y1 <= fcy <= y2:
+                            has_face = True
+                            break
+                    if has_face:
+                        with_faces.append([x1, y1, x2, y2])
+                all_boxes = with_faces
 
             count = len(all_boxes)
             for x1, y1, x2, y2 in all_boxes:
@@ -382,6 +424,12 @@ class App:
         tk.Label(bot, text="秒", fg="#ccc", bg="#2a2a2a",
                  font=("微软雅黑", 9)).pack(side=tk.LEFT)
 
+        self.face_var = tk.BooleanVar(value=self.cfg.get("face_filter", True))
+        tk.Checkbutton(bot, text="过滤后脑勺", variable=self.face_var,
+                        fg="#ccc", bg="#2a2a2a", selectcolor="#333",
+                        activebackground="#2a2a2a", activeforeground="#ccc",
+                        font=("微软雅黑", 9), command=self._on_face_toggle).pack(side=tk.LEFT, padx=(10, 0))
+
         tk.Button(bot, text="💾 保存选择", font=("微软雅黑", 9, "bold"),
                   bg="#1565c0", fg="white", relief="flat", cursor="hand2",
                   command=self._save).pack(side=tk.RIGHT)
@@ -423,6 +471,12 @@ class App:
     def _on_delay_change(self):
         v = self.delay_var.get()
         self.cfg["restore_delay"] = v
+        save_config(self.cfg)
+        self.detector.cfg = self.cfg
+
+    def _on_face_toggle(self):
+        v = self.face_var.get()
+        self.cfg["face_filter"] = v
         save_config(self.cfg)
         self.detector.cfg = self.cfg
 
