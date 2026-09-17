@@ -121,15 +121,29 @@ class Detector:
         self.model = YOLO("yolov8n.pt")
         self.status = "打开摄像头..."
 
-        # 摄像头 - DSHOW 后端
+        # 摄像头 - 依次尝试多个后端
         idx = self.cfg["camera_index"]
-        self.cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-        if not self.cap.isOpened():
-            self.status = "❌ 摄像头失败"
+        self.cap = None
+        for backend_name, backend in [("DSHOW", cv2.CAP_DSHOW), ("MSMF", cv2.CAP_MSMF), ("ANY", cv2.CAP_ANY)]:
+            try:
+                cap = cv2.VideoCapture(idx, backend)
+                if cap.isOpened():
+                    # 读一帧确认能用
+                    ret, test = cap.read()
+                    if ret and test is not None:
+                        self.cap = cap
+                        self.status = f"就绪 ({backend_name})"
+                        break
+                    cap.release()
+            except Exception:
+                continue
+
+        if not self.cap:
+            self.status = "❌ 摄像头打开失败"
             return
+
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
-        self.status = "就绪"
 
         while self.running:
             if not self.enabled:
@@ -440,9 +454,9 @@ class App:
 
         # 转换到320x240坐标
         zx0 = int(x0 * 320 / 400)
-        zy0 = int(y0 * 280 / 280)
+        zy0 = int(y0 * 240 / 280)
         zx1 = int(x1 * 320 / 400)
-        zy1 = int(y1 * 280 / 280)
+        zy1 = int(y1 * 240 / 280)
 
         zone = [min(zx0, zx1), min(zy0, zy1), max(zx0, zx1), max(zy0, zy1)]
 
