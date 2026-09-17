@@ -1,26 +1,46 @@
 @echo off
 chcp 65001 >nul
+title Guardian - 安装依赖
+echo.
 echo ==============================
-echo   Guardian - 安装依赖
+echo   Guardian - 依赖安装
 echo ==============================
 echo.
 
-:: 使用完整 Python 路径
-set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python312\python.exe
+:: 检查 Python
+python --version >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [错误] 未检测到 Python！
+    echo 请先安装 Python 3.10+：https://www.python.org/downloads/
+    echo 安装时请勾选 "Add Python to PATH"
+    echo.
+    pause
+    exit /b 1
+)
 
-:: 尝试用户电脑的 Python
-if exist "%PYTHON%" goto :install
-set PYTHON=python
+echo [1/2] 安装依赖中...
+python -m pip install -r requirements.txt -q
+if %errorlevel% neq 0 (
+    echo.
+    echo [警告] 部分依赖安装失败，尝试使用镜像源...
+    python -m pip install -r requirements.txt -q -i https://pypi.tuna.tsinghua.edu.cn/simple
+)
 
-:install
-echo 安装依赖中...
-%PYTHON% -m pip install -r requirements.txt -q
 echo.
-echo ✅ 安装完成！
+echo [2/2] 检查安装结果...
+python -c "import cv2, ultralytics, pystray; print('所有依赖安装成功！')" 2>nul
+if %errorlevel% neq 0 (
+    echo.
+    echo [错误] 依赖安装不完整，请检查网络后重试
+    pause
+    exit /b 1
+)
+
 echo.
-echo 运行方式：
-echo   1. 先列出窗口:  run.bat list
-echo   2. 配置向导:    run.bat setup
-echo   3. 启动监控:    run.bat
+echo ==============================
+echo   安装完成！
+echo ==============================
+echo.
+echo 双击 run.bat 即可启动 Guardian
 echo.
 pause
