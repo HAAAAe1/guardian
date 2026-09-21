@@ -39,6 +39,7 @@ DEFAULT_CONFIG = {
     "target_windows": [],
     "camera_index": 0,
     "enabled": True,
+    "overlay_visible": True,
 }
 
 
@@ -254,6 +255,110 @@ class Detector:
             self.is_hidden = False
 
 
+# ── 人数浮窗 ──────────────────────────────────────────────
+class CountOverlay:
+    """小浮窗：置顶显示当前检测人数"""
+
+    def __init__(self, detector, cfg):
+        self.detector = detector
+        self.cfg = cfg
+        self._visible = cfg.get("overlay_visible", True)
+        self._toplevel = None
+        self._lbl = None
+        self._last_count = -1
+        self._last_hidden = None
+
+    def start(self):
+        self._toplevel = tk.Toplevel()
+        self._toplevel.title("")
+        self._toplevel.overrideredirect(True)          # 无边框
+        self._toplevel.attributes("-topmost", True)    # 永远置顶
+        self._toplevel.configure(bg="#1a1a1a")
+        self._toplevel.attributes("-alpha", 0.85)       # 微透明
+
+        # 初始位置：屏幕右上角
+        sw = self._toplevel.winfo_screenwidth()
+        self._toplevel.geometry(f"96x40+{sw - 110}+10")
+
+        self._lbl = tk.Label(
+            self._toplevel, text="👤 0", fg="white", bg="#1a1a1a",
+            font=("Consolas", 16, "bold"), padx=6, pady=2,
+        )
+        self._lbl.pack(fill=tk.BOTH, expand=True)
+
+        # 可拖拽
+        self._toplevel.bind("<Button-1>", self._on_drag_start)
+        self._toplevel.bind("<B1-Motion>", self._on_drag_move)
+
+        # 右键菜单
+        menu = tk.Menu(self._toplevel, tearoff=0)
+        menu.add_command(label="隐藏浮窗", command=self.hide)
+        menu.add_command(label="退出 Guardian", command=self._quit)
+        self._toplevel.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
+
+        if not self._visible:
+            self._toplevel.withdraw()
+
+        self._tick()
+
+    def _on_drag_start(self, event):
+        self._drag_x = event.x
+        self._drag_y = event.y
+
+    def _on_drag_move(self, event):
+        x = self._toplevel.winfo_x() + event.x - self._drag_x
+        y = self._toplevel.winfo_y() + event.y - self._drag_y
+        self._toplevel.geometry(f"+{x}+{y}")
+
+    def _tick(self):
+        if not self._toplevel:
+            return
+        count = self.detector.person_count
+        hidden = self.detector.is_hidden
+        if count != self._last_count or hidden != self._last_hidden:
+            self._last_count = count
+            self._last_hidden = hidden
+            if hidden:
+                color = "#ff1744"
+                self._lbl.config(text=f"👤 {count}", fg=color)
+                self._toplevel.configure(bg="#3a0000")
+                self._lbl.configure(bg="#3a0000")
+            elif count >= self.cfg.get("threshold", 2):
+                color = "#ffd600"
+                self._lbl.config(text=f"👤 {count}", fg=color)
+                self._toplevel.configure(bg="#3a2a00")
+                self._lbl.configure(bg="#3a2a00")
+            else:
+                color = "#00e676"
+                self._lbl.config(text=f"👤 {count}", fg=color)
+                self._toplevel.configure(bg="#1a1a1a")
+                self._lbl.configure(bg="#1a1a1a")
+        self._toplevel.after(500, self._tick)
+
+    def show(self):
+        self._visible = True
+        if self._toplevel:
+            self._toplevel.deiconify()
+
+    def hide(self):
+        self._visible = False
+        if self._toplevel:
+            self._toplevel.withdraw()
+
+    def toggle(self):
+        if self._visible:
+            self.hide()
+        else:
+            self.show()
+
+    def _quit(self):
+        self.detector.stop()
+        self._toplevel.destroy()
+        # 杀掉整个进程
+        import os
+        os._exit(0)
+
+
 # ── GUI ────────────────────────────────────────────────────
 class App:
     def __init__(self):
@@ -387,6 +492,10 @@ class App:
                   command=self._save).pack(side=tk.RIGHT)
 
         # ── 关闭 → 托盘 ──
+        # 人数浮窗
+        self.overlay = CountOverlay(self.detector, self.cfg)
+        self.root.after(200, self.overlay.start)
+
         self.root.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
 
     def _refresh(self):
@@ -538,8 +647,14 @@ class App:
             icon.stop()
             self.root.after(0, self.root.destroy)
 
+        def on_toggle_overlay(icon, item):
+            self.cfg["overlay_visible"] = not self.cfg.get("overlay_visible", True)
+            save_config(self.cfg)
+            self.root.after(0, self.overlay.toggle)
+
         menu = pystray.Menu(
-            pystray.MenuItem("显示窗口", on_show, default=True),
+            pystray.MenuItem("显示主窗口", on_show, default=True),
+            pystray.MenuItem("切换人数浮窗", on_toggle_overlay),
             pystray.MenuItem("退出", on_quit),
         )
         self.tray = pystray.Icon("Guardian", mk_icon(), "Guardian", menu)
